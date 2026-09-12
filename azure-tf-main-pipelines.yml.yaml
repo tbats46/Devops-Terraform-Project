@@ -1,0 +1,80 @@
+trigger: none
+
+variables:
+  resourceGroup: 'rg-tf-backend'
+  storageAccount: 'sttfstate1234'
+  containerName: 'tfstate'
+  tfStateKey: 'devpipeline.terraform.tfstate'
+  serviceConnection: 'devtest-service-connection'
+
+# --- THIS IS WHERE YOUR BLOCK GOES ---
+stages:
+  - stage: tf_validate
+    displayName: 'Terraform Validate'
+    jobs:
+      - job: validate
+        continueOnError: false
+        steps:
+          - task: TerraformInstaller@0
+            displayName: 'TF Install'
+            inputs:
+              terraformVersion: 'latest'
+
+          - task: TerraformTaskV2@2
+            displayName: 'TF Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              backendServiceArm: '$(serviceConnection)'
+              backendAzureRmResourceGroupName: '$(resourceGroup)'
+              backendAzureRmStorageAccountName: '$(storageAccount)'
+              backendAzureRmContainerName: '$(containerName)'
+              backendAzureRmKey: '$(tfStateKey)'
+
+          - task: TerraformTaskV2@2
+            displayName: 'TF Validate'
+            inputs:
+              provider: 'azurerm'
+              command: 'validate'
+
+  - stage: tf_deploy
+    displayName: 'Terraform Deploy'
+    dependsOn: tf_validate
+    condition: succeeded('tf_validate')
+    jobs:
+      - deployment: apply
+        displayName: 'Terraform Apply Job'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: TerraformInstaller@0
+                  displayName: 'TF Install'
+                  inputs:
+                    terraformVersion: 'latest'
+
+                - task: TerraformTaskV2@2
+                  displayName: 'TF Init'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'init'
+                    backendServiceArm: '$(serviceConnection)'
+                    backendAzureRmResourceGroupName: '$(resourceGroup)'
+                    backendAzureRmStorageAccountName: '$(storageAccount)'
+                    backendAzureRmContainerName: '$(containerName)'
+                    backendAzureRmKey: '$(tfStateKey)'
+
+                - task: TerraformTaskV2@2
+                  displayName: 'TF Plan'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'plan'
+                    environmentServiceNameAzureRM: '$(serviceConnection)'
+
+                - task: TerraformTaskV2@2
+                  displayName: 'TF Apply'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'apply'
+                    environmentServiceNameAzureRM: '$(serviceConnection)'
