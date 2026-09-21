@@ -1,0 +1,134 @@
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+parameters:
+  - name: environment
+    type: string
+    default: dev
+    values:
+      - dev
+      - uat
+      - prod
+
+stages:
+
+# -----------------------------
+# Stage 1: Validate
+# -----------------------------
+- stage: tfvalidate
+  displayName: "Terraform Validate"
+  jobs:
+  - job: validate
+    displayName: "Validate Terraform configuration"
+    steps:
+    - task: TerraformInstaller@1
+      displayName: "Install Terraform"
+      inputs:
+        terraformVersion: "latest"
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init (backend)"
+      inputs:
+        provider: "azurerm"
+        command: "init"
+        backendServiceArm: $(serviceConnection)
+        backendAzureRmResourceGroupName: $(tfResourceGroup)
+        backendAzureRmStorageAccountName: $(tfStorageAccount)
+        backendAzureRmContainerName: $(tfContainerName)
+        backendAzureRmKey: $(tfStateKey)
+
+    - task: TerraformTask@5
+      displayName: "Terraform Validate"
+      inputs:
+        provider: "azurerm"
+        command: "validate"
+
+# -----------------------------
+# Stage 2: Plan
+# -----------------------------
+- stage: tfplan
+  displayName: "Terraform Plan"
+  dependsOn: tfvalidate
+  condition: succeeded()
+  jobs:
+  - job: plan
+    displayName: "Generate Terraform plan"
+    steps:
+    - task: TerraformInstaller@1
+      displayName: "Install Terraform"
+      inputs:
+        terraformVersion: "latest"
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init (backend)"
+      inputs:
+        provider: "azurerm"
+        command: "init"
+        backendServiceArm: $(serviceConnection)
+        backendAzureRmResourceGroupName: $(tfResourceGroup)
+        backendAzureRmStorageAccountName: $(tfStorageAccount)
+        backendAzureRmContainerName: $(tfContainerName)
+        backendAzureRmKey: $(tfStateKey)
+
+    - task: TerraformTask@5
+      displayName: "Terraform Plan"
+      inputs:
+        provider: "azurerm"
+        command: "plan"
+        environmentServiceNameAzureRM: $(serviceConnection)
+        planOutputPath: "$(System.DefaultWorkingDirectory)/tfplan"
+
+    # Removes cached binary files with stripped execute (+x) permissions
+    - script: rm -rf $(System.DefaultWorkingDirectory)/.terraform
+      displayName: "Clean local provider cache"
+
+    # Publishes source files (.tf) along with the plan binary
+    - publish: "$(System.DefaultWorkingDirectory)"
+      artifact: tfplan
+
+# -----------------------------
+# Stage 3: Apply
+# -----------------------------
+- stage: tfapply
+  displayName: "Terraform Apply"
+  dependsOn: tfplan
+  condition: succeeded()
+  jobs:
+  - deployment: apply
+    displayName: "Apply Terraform plan"
+    environment: ${{ parameters.environment }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: tfplan
+
+          - task: TerraformInstaller@1
+            displayName: "Install Terraform"
+            inputs:
+              terraformVersion: "latest"
+
+          # Re-initializes providers with proper binary permissions
+          - task: TerraformTask@5
+            displayName: "Terraform Init (backend)"
+            inputs:
+              provider: "azurerm"
+              command: "init"
+              workingDirectory: "$(Pipeline.Workspace)/tfplan"
+              backendServiceArm: $(serviceConnection)
+              backendAzureRmResourceGroupName: $(tfResourceGroup)
+              backendAzureRmStorageAccountName: $(tfStorageAccount)
+              backendAzureRmContainerName: $(tfContainerName)
+              backendAzureRmKey: $(tfStateKey)
+
+          - task: TerraformTask@5
+            displayName: "Terraform Apply (from plan)"
+            inputs:
+              provider: "azurerm"
+              command: "apply"
+              workingDirectory: "$(Pipeline.Workspace)/tfplan"
+              environmentServiceNameAzureRM: $(serviceConnection)
+              planInputPath: "$(Pipeline.Workspace)/tfplan/tfplan"
